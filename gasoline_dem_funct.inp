@@ -1,0 +1,143 @@
+set verbose off
+clear
+
+open gasoline.gdt
+
+### exploratory analysis
+summary cons price gdpc1   # price has higher dispersion
+gnuplot cons price gdpc1 --time-series --with-lines --output=display
+gnuplot price cons --output=display --fit=none
+# scatterplot -> no inverse relation between quantity and price over years:
+# should keep any other factor beeing stable through time.
+
+# add logs to cons, price and gdpc1 series
+series l_cons = log(cons)
+series l_price = log(price)
+series l_gdpc1 = log(gdpc1)
+
+
+### 1° - static model (p=0 and q=0)
+list DET = const dq1 dq2 dq3 dq4 time  # deterministic part
+ols l_cons DET l_price l_gdpc1 covid
+
+series res1 = $uhat 
+gnuplot res1 --time-series --with-lines --output=display # not seems a MDS
+corrgm res1 --plot=display
+modtest 8 --autocorr  --quiet
+# Godfrey test reject H0: serial correlation problem
+
+
+### 2° - dynamic model - ADL(3,5)
+ols l_cons DET l_cons(-1 to -3) l_price(0 to -5) l_gdpc1(0 to -5) covid
+
+series res2 = $uhat 
+gnuplot res2 --time-series --with-lines --output=display
+corrgm res2 --plot=display
+# no clear pattern, stochastic residuals, could be a MDS
+modtest 8 --autocorr --quiet
+# Godfrey test do not reject H0: no more serial correlation problem
+modtest --white --quiet
+# White test do not reject H0: heteroskedasticity not present 
+
+## Specification testing to drop irrelevant lags (for price and GDP)
+restrict 
+    b20 = 0
+    b19 = 0
+    b14 = 0
+    b13 = 0
+    b12 = 0
+    b11 = 0
+end restrict
+# test for multiple hypothesis not reject H0
+
+### 3° - more parsimonious dynamic model
+ols l_cons DET covid l_cons(-1 to -3) l_price(0 to -1) l_gdpc1(0 to -3)
+
+modtest 8 --autocorr --quiet
+# Godfrey test do not reject H0: no more serial correlation problem
+modtest --white --quiet
+# White test do not reject H0: heteroskedasticity not present 
+
+
+## but Endogeneity problems? 
+
+# possible instruments for l_price:
+# 1) European Oil Price (Brent)
+# 2) US Oil Price (WTI)
+
+open fedstl.bin
+data mcoilbrenteu
+data mcoilwtico
+
+# add logs
+l_brent = log(mcoilbrenteu)
+l_wti = log(mcoilwtico)
+
+# report just one attempt of TSLS --> Instruments: WTI and Brent with one lag 
+list EXO = DET covid l_cons(-1 to -3) l_gdpc1(0 to -3)
+tsls l_cons EXO l_price(0 to -1); EXO l_wti(0 to -1) l_brent(0 to -1)
+# Hausman test do not reject H0: keep OLS
+
+ 
+### dynamic multipliers
+
+# get back 3° model 
+ols l_cons DET covid l_cons(-1 to -3) l_price(0 to -1) l_gdpc1(0 to -3)
+
+# coefficients
+a = $coeff[7:9]     # coefficients for l_cons
+b1 = $coeff[10:11]  # coefficients for l_price
+b2 = $coeff[12:15]  # coefficients for l_gdpc1
+print a b1 b2  
+
+# polynomials evaluated in 1
+scalar A1 = 1 - sum(a)
+scalar B1 = sum(b1)
+scalar C1 = sum(b2)
+print A1 B1 C1
+
+# gasoline consumption and price - elasticity 
+matrix shock1 = 1 | zeros(16,1)    # until 4 years later
+matrix m1 = filter(shock1, b1, a) 
+matrix cm1 = cum(m1)
+table1 = seq(0, 16)' ~ m1 ~ cm1
+print table1 
+printf "Instantaneously, elasticity of gasoline with respect to price is %g\n", b1[1]
+printf "Long run elasticity of gasoline with respect to price is %g\n", B1/A1
+
+gnuplot 2 3 1 --matrix=table1 --with-lines --output=display --fit=none --single-yaxis
+# green line for dynamic multipliers, orange line for cumulative multipliers 
+
+# gasoline consumption and income - elasticity
+matrix shock2 = 1 | zeros(16,1)    # until 4 years later
+matrix m2 = filter(shock2, b2, a) 
+matrix cm2 = cum(m2)
+table2 = seq(0, 16)' ~ m2 ~ cm2
+print table2
+printf "Instantaneously, elasticity of gasoline with respect to income is %g\n", b2[1]
+printf "Long run elasticity of gasoline with respect to income is %g\n", C1/A1
+
+gnuplot 2 3 1 --matrix=table2 --with-lines --output=display --fit=none --single-yaxis
+# green line for dynamic multipliers, orange line for cumulative multipliers 
+
+
+### ECM representation (of the 3° model)
+diff l_cons l_gdpc1 l_price
+
+ols d_l_cons DET covid d_l_cons(-1 to -2) d_l_price(0) d_l_gdpc1(0 to -2) l_cons(-1) l_price(-1) l_gdpc1(-1)  
+modtest 8 --autocorr --quiet
+modtest --white --quiet
+
+# price elasticity
+elpr_i = $coeff[9]
+elpr_l = -($coeff[14]/$coeff[13])
+printf "Instantaneously, elasticity of gasoline with respect to price is %g\n", elpr_i
+printf "Long run elasticity of gasoline with respect to price is %g\n", elpr_l
+
+# income elasticity
+elin_i = $coeff[10]
+elin_l = -($coeff[15]/$coeff[13])
+printf "Instantaneously, elasticity of gasoline with respect to income is %g\n", elin_i
+printf "Long run elasticity of gasoline with respect to income is %g\n", elin_l
+
+
